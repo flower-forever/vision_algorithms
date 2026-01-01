@@ -9,14 +9,19 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import time
 import os
 from tqdm import tqdm
+import warnings
 
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']  # 中文字体
-plt.rcParams['axes.unicode_minus'] = False  # 解决负号'-'显示为方块的问题
+# 配置 matplotlib 支持中文显示
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'FangSong']
+matplotlib.rcParams['axes.unicode_minus'] = False
+# 忽略字体警告
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
 # 导入数据集加载函数
 from download_dataset import get_dataset_info
@@ -34,10 +39,16 @@ except ImportError:
     VisionTransformer = None
     PatchEmbed = None
 
+try:
+    from cnn import simplecnn
+except ImportError:
+    print("警告: 无法导入 cnn 模块，请检查路径")
+    simplecnn = None
+
 
 # ==================== 配置区域 ====================
 CONFIG = {
-    'model_name': 'vit',  # 可选: 'vit', 'cnn'
+    'model_name': 'cnn',  # 可选: 'vit', 'cnn'
     'num_classes': 10,
     'epochs': 20,
     'batch_size': 64,
@@ -50,6 +61,40 @@ CONFIG = {
 }
 
 
+# ==================== 工具函数 ====================
+def get_unique_filename(directory, base_name, extension):
+    """
+    生成唯一的文件名，如果文件存在则自动添加编号
+    
+    Args:
+        directory: 文件所在目录
+        base_name: 基础文件名（不含扩展名）
+        extension: 文件扩展名（如 '.pth', '.png'）
+    
+    Returns:
+        完整的唯一文件路径
+    """
+    # 确保扩展名以点开头
+    if not extension.startswith('.'):
+        extension = '.' + extension
+    
+    # 原始文件路径
+    file_path = os.path.join(directory, base_name + extension)
+    
+    # 如果文件不存在，直接返回
+    if not os.path.exists(file_path):
+        return file_path
+    
+    # 文件存在，添加编号
+    counter = 1
+    while True:
+        new_name = f"{base_name}_{counter}{extension}"
+        new_path = os.path.join(directory, new_name)
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
+
+
 # ==================== 设置随机种子 ====================
 def set_seed(seed):
     """设置随机种子以保证可复现性"""
@@ -59,54 +104,6 @@ def set_seed(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-
-# ==================== 简单 CNN 模型定义 ====================
-class SimpleCNN(nn.Module):
-    """简单的 CNN 模型用于 CIFAR-10"""
-    def __init__(self, num_classes=10):
-        super(SimpleCNN, self).__init__()
-        self.features = nn.Sequential(
-            # Block 1
-            nn.Conv2d(3, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            # Block 2
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-            
-            # Block 3
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-        
-        self.classifier = nn.Sequential(
-            nn.Dropout(0.5),
-            nn.Linear(256 * 4 * 4, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.5),
-            nn.Linear(512, num_classes)
-        )
-    
-    def forward(self, x):
-        x = self.features(x)
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
 
 
 # ==================== ViT 适配 CIFAR-10 ====================
@@ -140,8 +137,11 @@ def get_model(model_name, num_classes):
         print("基于用户的 vit.py 实现")
         model = create_vit_for_cifar10(num_classes=num_classes)
     elif model_name.lower() == 'cnn':
-        print("使用 Simple CNN 模型")
-        model = SimpleCNN(num_classes=num_classes)
+        if simplecnn is None:
+            raise ImportError("无法导入 simplecnn，请检查 cnn.py 文件路径")
+        print("使用用户定义的 CNN 模型")
+        print("基于用户的 cnn.py 实现")
+        model = simplecnn(num_class=num_classes)
     else:
         raise ValueError(f"不支持的模型: {model_name}")
     
@@ -280,20 +280,20 @@ def plot_training_curves(history, save_path):
     epochs = range(1, len(history['train_loss']) + 1)
     
     # 绘制损失曲线
-    axes[0].plot(epochs, history['train_loss'], 'b-o', label='训练损失', linewidth=2, markersize=6)
-    axes[0].plot(epochs, history['val_loss'], 'r-s', label='验证损失', linewidth=2, markersize=6)
+    axes[0].plot(epochs, history['train_loss'], 'b-o', label='Training Loss', linewidth=2, markersize=6)
+    axes[0].plot(epochs, history['val_loss'], 'r-s', label='Validation Loss', linewidth=2, markersize=6)
     axes[0].set_xlabel('Epoch', fontsize=12, fontweight='bold')
     axes[0].set_ylabel('Loss', fontsize=12, fontweight='bold')
-    axes[0].set_title('训练和验证损失曲线', fontsize=14, fontweight='bold', pad=15)
+    axes[0].set_title('Training and Validation Loss Curves', fontsize=14, fontweight='bold', pad=15)
     axes[0].legend(fontsize=11, loc='best')
     axes[0].grid(True, alpha=0.3, linestyle='--')
     
     # 绘制准确率曲线
-    axes[1].plot(epochs, history['train_acc'], 'b-o', label='训练准确率', linewidth=2, markersize=6)
-    axes[1].plot(epochs, history['val_acc'], 'r-s', label='验证准确率', linewidth=2, markersize=6)
+    axes[1].plot(epochs, history['train_acc'], 'b-o', label='Training Accuracy', linewidth=2, markersize=6)
+    axes[1].plot(epochs, history['val_acc'], 'r-s', label='Validation Accuracy', linewidth=2, markersize=6)
     axes[1].set_xlabel('Epoch', fontsize=12, fontweight='bold')
     axes[1].set_ylabel('Accuracy (%)', fontsize=12, fontweight='bold')
-    axes[1].set_title('训练和验证准确率曲线', fontsize=14, fontweight='bold', pad=15)
+    axes[1].set_title('Training and Validation Accuracy Curves', fontsize=14, fontweight='bold', pad=15)
     axes[1].legend(fontsize=11, loc='best')
     axes[1].grid(True, alpha=0.3, linestyle='--')
     
@@ -314,7 +314,7 @@ def plot_confusion_matrix(model, test_loader, classes, device, save_path):
     all_labels = []
     
     with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc='生成混淆矩阵'):
+        for inputs, labels in tqdm(test_loader, desc='Generating Confusion Matrix'):
             inputs = inputs.to(device)
             outputs = model(inputs)
             _, predicted = outputs.max(1)
@@ -327,11 +327,11 @@ def plot_confusion_matrix(model, test_loader, classes, device, save_path):
     plt.figure(figsize=(12, 10))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                 xticklabels=classes, yticklabels=classes,
-                cbar_kws={'label': '样本数量'},
+                cbar_kws={'label': 'Sample size'},
                 annot_kws={'fontsize': 10})
-    plt.xlabel('预测类别', fontsize=13, fontweight='bold')
-    plt.ylabel('真实类别', fontsize=13, fontweight='bold')
-    plt.title('混淆矩阵', fontsize=15, fontweight='bold', pad=15)
+    plt.xlabel('Predicted Class', fontsize=13, fontweight='bold')
+    plt.ylabel('True Class', fontsize=13, fontweight='bold')
+    plt.title('Confusion Matrix', fontsize=15, fontweight='bold', pad=15)
     plt.xticks(rotation=45, ha='right')
     plt.yticks(rotation=0)
     plt.tight_layout()
@@ -404,6 +404,7 @@ def main():
     }
     
     best_val_acc = 0.0
+    best_model_path = None  # 记录最佳模型的保存路径
     
     # 开始训练
     print("=" * 70)
@@ -438,21 +439,24 @@ def main():
         print(f"验证 - Loss: {val_loss:.4f}, Acc: {val_acc:.2f}%")
         print(f"学习率: {optimizer.param_groups[0]['lr']:.6f}")
         
-        # 保存最佳模型
+        # 保存最佳模型（第一次创建文件，之后覆盖）
         if val_acc > best_val_acc:
             best_val_acc = val_acc
-            save_path = os.path.join(
-                CONFIG['save_dir'], 
-                f"{CONFIG['model_name']}_best.pth"
-            )
+            # 只在第一次保存时生成唯一文件名，之后都覆盖同一个文件
+            if best_model_path is None:
+                best_model_path = get_unique_filename(
+                    CONFIG['save_dir'],
+                    f"{CONFIG['model_name']}_best",
+                    '.pth'
+                )
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
                 'config': CONFIG
-            }, save_path)
-            print(f"✓ 保存最佳模型 (验证准确率: {val_acc:.2f}%)")
+            }, best_model_path)
+            print(f"✓ 保存最佳模型至: {best_model_path} (验证准确率: {val_acc:.2f}%)")
     
     # 训练结束
     total_time = time.time() - start_time
@@ -461,11 +465,12 @@ def main():
     print(f"最佳验证准确率: {best_val_acc:.2f}%")
     print("=" * 70 + "\n")
     
-    # 绘制训练曲线
+    # 绘制训练曲线（自动处理重名）
     print("绘制训练曲线...")
-    plot_path = os.path.join(
-        CONFIG['plot_dir'], 
-        f"{CONFIG['model_name']}_training_curves.png"
+    plot_path = get_unique_filename(
+        CONFIG['plot_dir'],
+        f"{CONFIG['model_name']}_training_curves",
+        '.png'
     )
     plot_training_curves(history, plot_path)
     
@@ -474,12 +479,13 @@ def main():
     test_loss, test_acc = validate(model, test_loader, criterion, device)
     print(f"测试集 - Loss: {test_loss:.4f}, Acc: {test_acc:.2f}%\n")
     
-    # 绘制混淆矩阵
+    # 绘制混淆矩阵（自动处理重名）
     print("绘制混淆矩阵...")
-    classes = ['飞机', '汽车', '鸟', '猫', '鹿', '狗', '青蛙', '马', '船', '卡车']
-    cm_path = os.path.join(
+    classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
+    cm_path = get_unique_filename(
         CONFIG['plot_dir'],
-        f"{CONFIG['model_name']}_confusion_matrix.png"
+        f"{CONFIG['model_name']}_confusion_matrix",
+        '.png'
     )
     
     try:

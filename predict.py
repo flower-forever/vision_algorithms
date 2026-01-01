@@ -8,15 +8,19 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from PIL import Image
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import os
 import sys
 from pathlib import Path
+import warnings
 
 # 配置 matplotlib 支持中文显示
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
-plt.rcParams['axes.unicode_minus'] = False
+matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun', 'KaiTi', 'FangSong']
+matplotlib.rcParams['axes.unicode_minus'] = False
+# 忽略字体警告
+warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
 # 导入模型
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Vision Transformer'))
@@ -28,18 +32,58 @@ except ImportError:
     print("警告: 无法导入 vit 模块")
     VisionTransformer = None
 
-# 从 train.py 导入 CNN 模型
-from train import SimpleCNN, create_vit_for_cifar10
+try:
+    from cnn import simplecnn
+except ImportError:
+    print("警告: 无法导入 cnn 模块")
+    simplecnn = None
+
+# 从 train.py 导入辅助函数
+from train import create_vit_for_cifar10
 
 
 # ==================== 配置区域 ====================
 CONFIG = {
-    'model_name': 'vit',  # 可选: 'vit', 'cnn'
-    'model_path': './checkpoints/vit_best.pth',  # 模型权重路径
+    'model_name': 'cnn',  # 可选: 'vit', 'cnn'
+    'model_path': './checkpoints/cnn_best.pth',  # 模型权重路径
     'num_classes': 10,
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-    'class_names': ['飞机', '汽车', '鸟', '猫', '鹿', '狗', '青蛙', '马', '船', '卡车']
+    'class_names': ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 }
+
+
+# ==================== 工具函数 ====================
+def get_unique_filename(directory, base_name, extension):
+    """
+    生成唯一的文件名，如果文件存在则自动添加编号
+    
+    Args:
+        directory: 文件所在目录
+        base_name: 基础文件名（不含扩展名）
+        extension: 文件扩展名（如 '.pth', '.png'）
+    
+    Returns:
+        完整的唯一文件路径
+    """
+    # 确保扩展名以点开头
+    if not extension.startswith('.'):
+        extension = '.' + extension
+    
+    # 原始文件路径
+    file_path = os.path.join(directory, base_name + extension)
+    
+    # 如果文件不存在，直接返回
+    if not os.path.exists(file_path):
+        return file_path
+    
+    # 文件存在，添加编号
+    counter = 1
+    while True:
+        new_name = f"{base_name}_{counter}{extension}"
+        new_path = os.path.join(directory, new_name)
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
 
 
 # ==================== 加载模型 ====================
@@ -51,7 +95,7 @@ def load_model(model_path, model_name, num_classes, device):
     if model_name.lower() == 'vit':
         model = create_vit_for_cifar10(num_classes=num_classes)
     elif model_name.lower() == 'cnn':
-        model = SimpleCNN(num_classes=num_classes)
+        model = simplecnn(num_class=num_classes)
     else:
         raise ValueError(f"不支持的模型: {model_name}")
     
@@ -181,7 +225,7 @@ def visualize_prediction(image, predicted_class, confidence, class_names,
     axes[0].imshow(image)
     axes[0].axis('off')
     axes[0].set_title(
-        f'预测: {predicted_class}\n置信度: {confidence:.2f}%',
+        f'Predicted: {predicted_class}\nConfidence: {confidence:.2f}%',
         fontsize=14, fontweight='bold', pad=10
     )
     
@@ -189,8 +233,8 @@ def visualize_prediction(image, predicted_class, confidence, class_names,
     colors = ['green' if i == np.argmax(probabilities) else 'skyblue' 
               for i in range(len(class_names))]
     bars = axes[1].barh(class_names, probabilities, color=colors)
-    axes[1].set_xlabel('概率 (%)', fontsize=12, fontweight='bold')
-    axes[1].set_title('各类别预测概率', fontsize=14, fontweight='bold', pad=10)
+    axes[1].set_xlabel('Probability (%)', fontsize=12, fontweight='bold')
+    axes[1].set_title('Class Prediction Probabilities', fontsize=14, fontweight='bold', pad=10)
     axes[1].set_xlim(0, 100)
     
     # 在条形图上添加数值标签
@@ -201,10 +245,10 @@ def visualize_prediction(image, predicted_class, confidence, class_names,
     
     plt.tight_layout()
     
-    # 保存预测结果
+    # 保存预测结果（自动处理重名）
     save_dir = './predictions'
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, f'pred_{Path(image_path).stem}.png')
+    save_path = get_unique_filename(save_dir, f'pred_{Path(image_path).stem}', '.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n✓ 预测结果已保存至: {save_path}")
     
@@ -241,13 +285,13 @@ def visualize_batch_predictions(results, image_paths, class_names):
     for idx in range(n_images, len(axes)):
         axes[idx].axis('off')
     
-    plt.suptitle('批量预测结果', fontsize=16, fontweight='bold', y=0.98)
+    plt.suptitle('Batch Prediction Results', fontsize=16, fontweight='bold', y=0.98)
     plt.tight_layout()
     
-    # 保存结果
+    # 保存结果（自动处理重名）
     save_dir = './predictions'
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, 'batch_predictions.png')
+    save_path = get_unique_filename(save_dir, 'batch_predictions', '.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n✓ 批量预测结果已保存至: {save_path}")
     
@@ -312,7 +356,7 @@ def predict_from_test_set(model, class_names, device, num_samples=10):
         axes[idx].imshow(image_np)
         axes[idx].axis('off')
         
-        title = f"真实: {true_class}\n预测: {predicted_class}\n{confidence_score:.1f}%"
+        title = f"True: {true_class}\nPred: {predicted_class}\n{confidence_score:.1f}%"
         color = 'green' if is_correct else 'red'
         axes[idx].set_title(title, fontsize=10, fontweight='bold', color=color, pad=8)
         
@@ -330,14 +374,14 @@ def predict_from_test_set(model, class_names, device, num_samples=10):
     # 计算准确率
     accuracy = sum(r['correct'] for r in results) / len(results) * 100
     
-    plt.suptitle(f'测试集随机预测 (准确率: {accuracy:.1f}%)', 
+    plt.suptitle(f'Test Set Random Predictions (Accuracy: {accuracy:.1f}%)', 
                  fontsize=16, fontweight='bold', y=0.98)
     plt.tight_layout()
     
-    # 保存结果
+    # 保存结果（自动处理重名）
     save_dir = './predictions'
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, 'test_set_predictions.png')
+    save_path = get_unique_filename(save_dir, 'test_set_predictions', '.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     print(f"\n✓ 测试集预测结果已保存至: {save_path}")
     
