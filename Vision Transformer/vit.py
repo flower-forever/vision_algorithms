@@ -28,7 +28,7 @@ def drop_path(x, drop_prob: float = 0., training: bool = False):
 class Drop_path(nn.Module):
     """Drop paths (Stochastic Depth) per sample  (when applied in main path of residual blocks).
     """
-    def __init__(self, drop_prob=None):
+    def __init__(self, drop_prob: float = 0.):
         super(Drop_path, self).__init__()
         self.drop_prob = drop_prob
 
@@ -148,7 +148,7 @@ class MLP(nn.Module):
     
 class Block(nn.Module):
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=None):
         '''
         :param dim: 输入的token维度
         :param num_heads: 注意力的头数
@@ -162,6 +162,7 @@ class Block(nn.Module):
         :param norm_layer: 归一化层类型
         '''
         super(Block, self).__init__()
+        norm_layer = norm_layer or nn.LayerNorm
         self.norm1 = norm_layer(dim) # transformer block中的第一个LayerNorm
          # 多头自注意力机制,实例化
         self.attn = Attention(
@@ -186,8 +187,8 @@ class VisionTransformer(nn.Module):
     def __init__(self, img_size=224, patch_size=16, in_chans=3, num_classes=1000,
                  embed_dim=768, depth=12, num_heads=8, mlp_ratio=4., qkv_bias=True,
                  qk_scale=None, representation_size=None, distilled=False, 
-                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer =PatchEmbed,
-                 norm_layer=None):
+                 drop_rate=0., attn_drop_rate=0., drop_path_rate=0., embed_layer=PatchEmbed,
+                 norm_layer=None, act_layer=None):
         '''
         :param img_size: 输入图像的大小
         :param patch_size: 每个patch的大小
@@ -215,7 +216,7 @@ class VisionTransformer(nn.Module):
 
         # 设置一个较小的参数防止除0
         norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6) #如果没有提供归一化层，则使用LayerNorm
-        act_layer = act_layer or nn.GELU()
+        act_layer = act_layer or nn.GELU
         # Patch embedding层，将图像划分为patches并嵌入到高维空间
         self.patch_embed = embed_layer(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
@@ -231,8 +232,8 @@ class VisionTransformer(nn.Module):
         # 创建Transformer编码器块的列表
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         
-        # 使用nn.Sequential将列表中的所有模块打包为一个整体
-        self.blocks = nn.ModuleList(*[
+        # 使用nn.ModuleList将列表中的所有模块打包为一个整体
+        self.blocks = nn.ModuleList([
             Block(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
                 qk_scale=qk_scale, drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i],
@@ -279,7 +280,9 @@ class VisionTransformer(nn.Module):
             x = torch.cat((cls_token, self.dist_token.expand(x.shape[0], -1, -1), x), dim=1)  # 拼接分类token和蒸馏token
 
         x = self.pos_drop(x + self.pos_embed)  # 添加位置嵌入并进行丢弃
-        x = self.blocks(x)  # 通过Transformer编码器块
+        # 通过Transformer编码器块（手动遍历ModuleList）
+        for block in self.blocks:
+            x = block(x)
         x = self.norm(x)  # 最后的归一化层
         if self.dist_token is None:
             return self.pre_logits(x[:, 0])  # dist_token不存在，提取cls_token对应的输出
@@ -292,8 +295,8 @@ class VisionTransformer(nn.Module):
             # 分别通过head和head_dist进行预测
             x, x_dist = self.head(x[0]), self.head_dist(x[1])  # 分别通过分类头和蒸馏头
             # 如果是训练模式且不是脚本模式
-            if self.training and not torch.jit.is_scripting():
-                # 则返回两个人头部的预测结果
+            if self.training:
+                # 则返回两个头部的预测结果
                 return x, x_dist
         else:
             x = self.head(x) #  最后的linear全连接层

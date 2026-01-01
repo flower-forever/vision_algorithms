@@ -1,2 +1,10 @@
 多模态视频生成论文/*.pdf
 目标检测论文/*.pdf
+doc/
+.venv/
+checkpoints/
+plots/
+predictions/
+__pycache__/
+Vision Transformer/__pycache__/
+dataset/
