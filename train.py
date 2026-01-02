@@ -2,6 +2,27 @@
 通用模型训练脚本
 支持 Vision Transformer (ViT) 和 CNN 模型
 包含训练过程可视化
+
+# ==================== 注册 MobileNet 模型 ====================
+try:
+    from mobilenet import mobilenet_v2_cifar  # 你的模型文件
+    register_model('mobilenet', mobilenet_v2_cifar, "MobileNet-V2 (CIFAR-10 专用)")
+except ImportError:
+    print("警告: 无法导入 mobilenet 模块")
+
+# ==================== 新模型接口规范 ====================
+def your_model_cifar(num_classes=10):
+    ###
+    Args:
+        num_classes: 分类数量
+    Returns:
+        nn.Module 实例
+    ###
+        
+    return YourModel(num_classes=num_classes)
+
+如果参数名不同，请使用 lambda 包装以统一接口，例如：
+register_model('mymodel', lambda nc: mymodel(num_class=nc), "描述")
 """
 
 import torch
@@ -23,35 +44,82 @@ matplotlib.rcParams['axes.unicode_minus'] = False
 # 忽略字体警告
 warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 
-# 导入数据集加载函数
-from download_dataset import get_dataset_info
-
 # 导入模型
 import sys
-import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Vision Transformer'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'CNN'))
 
+
+# ==================== 模型注册表 ====================
+# 用于统一管理所有模型，新增模型只需在此注册
+MODEL_REGISTRY = {}
+
+def register_model(name, model_fn, description=""):
+    """
+    注册模型到注册表
+    Args:
+        name: 模型名称（小写）
+        model_fn: 模型创建函数，接受 num_classes 参数
+        description: 模型描述
+    """
+    MODEL_REGISTRY[name.lower()] = {
+        'fn': model_fn,
+        'description': description
+    }
+
+def list_models():
+    """列出所有可用模型"""
+    print("\n可用模型列表:")
+    print("-" * 50)
+    for name, info in MODEL_REGISTRY.items():
+        print(f"  {name:15s} - {info['description']}")
+    print("-" * 50)
+
+
+# ==================== 注册 ViT 模型 ====================
 try:
     from vit import VisionTransformer, PatchEmbed
+    
+    def create_vit_for_cifar10(num_classes=10):
+        """创建适配 CIFAR-10 的 Vision Transformer"""
+        return VisionTransformer(
+            img_size=32, patch_size=4, in_chans=3, num_classes=num_classes,
+            embed_dim=384, depth=6, num_heads=6, mlp_ratio=4.,
+            qkv_bias=True, drop_rate=0.1, attn_drop_rate=0.1, drop_path_rate=0.1
+        )
+    
+    register_model('vit', create_vit_for_cifar10, "Vision Transformer (CIFAR-10 适配)")
 except ImportError:
-    print("警告: 无法导入 vit 模块，请检查路径")
-    VisionTransformer = None
-    PatchEmbed = None
+    print("警告: 无法导入 vit 模块")
 
+
+# ==================== 注册 CNN 模型 ====================
 try:
     from cnn import simplecnn
+    # simplecnn 使用 num_class 参数，包装一下统一接口
+    register_model('cnn', lambda nc: simplecnn(num_class=nc), "SimpleCNN 基础卷积网络")
 except ImportError:
-    print("警告: 无法导入 cnn 模块，请检查路径")
-    simplecnn = None
+    print("警告: 无法导入 cnn 模块")
+
+
+# ==================== 注册 ResNet 模型 ====================
+try:
+    from resnet import resnet18_cifar, resnet34_cifar, resnet50_cifar, resnet101_cifar, resnet152_cifar
+    register_model('resnet18', resnet18_cifar, "ResNet-18 (CIFAR-10 专用)")
+    register_model('resnet34', resnet34_cifar, "ResNet-34 (CIFAR-10 专用)")
+    register_model('resnet50', resnet50_cifar, "ResNet-50 (CIFAR-10 专用)")
+    register_model('resnet101', resnet101_cifar, "ResNet-101 (CIFAR-10 专用)")
+    register_model('resnet152', resnet152_cifar, "ResNet-152 (CIFAR-10 专用)")
+except ImportError:
+    print("警告: 无法导入 resnet 模块")
 
 
 # ==================== 配置区域 ====================
 CONFIG = {
-    'model_name': 'cnn',  # 可选: 'vit', 'cnn'
+    'model_name': 'resnet18',  # 可选: 'vit', 'cnn', 'resnet18/34/50/101/152' (运行时输入 list_models() 查看全部)
     'num_classes': 10,
     'epochs': 20,
-    'batch_size': 64,
+    'batch_size': 128,
     'learning_rate': 0.001,
     'weight_decay': 1e-4,
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
@@ -106,46 +174,27 @@ def set_seed(seed):
 
 
 
-# ==================== ViT 适配 CIFAR-10 ====================
-# 直接使用用户编写的 VisionTransformer 类，适配 32x32 的 CIFAR-10 图像
-def create_vit_for_cifar10(num_classes=10):
-    """创建适配 CIFAR-10 的 Vision Transformer"""
-    model = VisionTransformer(
-        img_size=32,  # CIFAR-10 图像大小
-        patch_size=4,  # 使用 4x4 的 patch，得到 8x8=64 个patches
-        in_chans=3,
-        num_classes=num_classes,
-        embed_dim=384,  # 减小嵌入维度以适应小图像
-        depth=6,  # 减少层数
-        num_heads=6,
-        mlp_ratio=4.,
-        qkv_bias=True,
-        drop_rate=0.1,
-        attn_drop_rate=0.1,
-        drop_path_rate=0.1
-    )
-    return model
-
-
 # ==================== 获取模型 ====================
 def get_model(model_name, num_classes):
-    """根据名称获取模型"""
-    if model_name.lower() == 'vit':
-        if VisionTransformer is None:
-            raise ImportError("无法导入 VisionTransformer，请检查 vit.py 文件路径")
-        print("使用 Vision Transformer 模型 (适配 CIFAR-10)")
-        print("基于用户的 vit.py 实现")
-        model = create_vit_for_cifar10(num_classes=num_classes)
-    elif model_name.lower() == 'cnn':
-        if simplecnn is None:
-            raise ImportError("无法导入 simplecnn，请检查 cnn.py 文件路径")
-        print("使用用户定义的 CNN 模型")
-        print("基于用户的 cnn.py 实现")
-        model = simplecnn(num_class=num_classes)
-    else:
-        raise ValueError(f"不支持的模型: {model_name}")
+    """
+    根据名称从注册表获取模型
     
-    return model
+    Args:
+        model_name: 模型名称
+        num_classes: 分类数
+    Returns:
+        模型实例
+    """
+    model_name_lower = model_name.lower()
+    
+    if model_name_lower not in MODEL_REGISTRY:
+        available = ', '.join(MODEL_REGISTRY.keys())
+        raise ValueError(f"不支持的模型: {model_name}\n可用模型: {available}")
+    
+    model_info = MODEL_REGISTRY[model_name_lower]
+    print(f"使用 {model_info['description']}")
+    
+    return model_info['fn'](num_classes)
 
 
 # ==================== 数据加载 ====================
@@ -171,19 +220,19 @@ def get_data_loaders(batch_size):
     )
     
     # 划分训练集和验证集
-    from torch.utils.data import random_split
+    from torch.utils.data import random_split, Subset
     train_size = int(0.9 * len(train_dataset))
     val_size = len(train_dataset) - train_size
-    train_subset, val_subset = random_split(
+    train_subset, val_indices_subset = random_split(
         train_dataset, [train_size, val_size],
         generator=torch.Generator().manual_seed(42)
     )
     
-    # 为验证集设置测试时的 transform
+    # 验证集使用测试时的 transform
     val_dataset = torchvision.datasets.CIFAR10(
         root='./dataset', train=True, download=False, transform=test_transform
     )
-    val_subset.dataset = val_dataset
+    val_subset = Subset(val_dataset, val_indices_subset.indices)
     
     # 测试集
     test_dataset = torchvision.datasets.CIFAR10(

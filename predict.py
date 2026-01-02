@@ -26,26 +26,14 @@ warnings.filterwarnings('ignore', category=UserWarning, module='matplotlib')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'Vision Transformer'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'CNN'))
 
-try:
-    from vit import VisionTransformer
-except ImportError:
-    print("警告: 无法导入 vit 模块")
-    VisionTransformer = None
-
-try:
-    from cnn import simplecnn
-except ImportError:
-    print("警告: 无法导入 cnn 模块")
-    simplecnn = None
-
-# 从 train.py 导入辅助函数
-from train import create_vit_for_cifar10
+# 从 train.py 导入模型注册表和获取模型函数
+from train import MODEL_REGISTRY, get_model, list_models
 
 
 # ==================== 配置区域 ====================
 CONFIG = {
-    'model_name': 'cnn',  # 可选: 'vit', 'cnn'
-    'model_path': './checkpoints/cnn_best.pth',  # 模型权重路径
+    'model_name': 'resnet18',  # 可选: 'vit', 'cnn', 'resnet18/34/50/101/152' (运行 list_models() 查看全部)
+    'model_path': './checkpoints/resnet18_best.pth',  # 模型权重路径
     'num_classes': 10,
     'device': 'cuda' if torch.cuda.is_available() else 'cpu',
     'class_names': ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
@@ -91,16 +79,11 @@ def load_model(model_path, model_name, num_classes, device):
     """加载训练好的模型"""
     print(f"加载模型: {model_path}")
     
-    # 创建模型
-    if model_name.lower() == 'vit':
-        model = create_vit_for_cifar10(num_classes=num_classes)
-    elif model_name.lower() == 'cnn':
-        model = simplecnn(num_class=num_classes)
-    else:
-        raise ValueError(f"不支持的模型: {model_name}")
+    # 使用注册表创建模型
+    model = get_model(model_name, num_classes)
     
     # 加载权重
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
     model.eval()
@@ -300,10 +283,9 @@ def visualize_batch_predictions(results, image_paths, class_names):
 
 
 # ==================== 从测试集随机预测 ====================
-def predict_from_test_set(model, class_names, device, num_samples=10):
-    """从 CIFAR-10 测试集随机选择图像进行预测"""
+def predict_from_test_set(model, class_names, device, num_samples=20):
+    """从 CIFAR-10 测试集随机选择图像进行预测，固定显示在一张图上"""
     import torchvision
-    from torch.utils.data import DataLoader
     
     # 加载测试集（不进行归一化，用于显示）
     test_dataset_raw = torchvision.datasets.CIFAR10(
@@ -319,14 +301,14 @@ def predict_from_test_set(model, class_names, device, num_samples=10):
         root='./dataset', train=False, download=False, transform=test_transform
     )
     
-    # 随机选择样本
+    # 随机选择样本（固定20张，4行5列）
+    num_samples = min(num_samples, 20)
     indices = np.random.choice(len(test_dataset), num_samples, replace=False)
     
-    # 创建子图
-    cols = 5
-    rows = (num_samples + cols - 1) // cols
-    fig, axes = plt.subplots(rows, cols, figsize=(3*cols, 3*rows))
-    axes = axes.flatten() if num_samples > 1 else [axes]
+    # 创建子图（4行5列）
+    rows, cols = 4, 5
+    fig, axes = plt.subplots(rows, cols, figsize=(15, 12))
+    axes = axes.flatten()
     
     results = []
     
@@ -356,9 +338,9 @@ def predict_from_test_set(model, class_names, device, num_samples=10):
         axes[idx].imshow(image_np)
         axes[idx].axis('off')
         
-        title = f"True: {true_class}\nPred: {predicted_class}\n{confidence_score:.1f}%"
+        title = f"T:{true_class}\nP:{predicted_class}\n{confidence_score:.1f}%"
         color = 'green' if is_correct else 'red'
-        axes[idx].set_title(title, fontsize=10, fontweight='bold', color=color, pad=8)
+        axes[idx].set_title(title, fontsize=9, fontweight='bold', color=color, pad=5)
         
         results.append({
             'true_class': true_class,
@@ -373,22 +355,153 @@ def predict_from_test_set(model, class_names, device, num_samples=10):
     
     # 计算准确率
     accuracy = sum(r['correct'] for r in results) / len(results) * 100
+    correct_count = sum(r['correct'] for r in results)
     
-    plt.suptitle(f'Test Set Random Predictions (Accuracy: {accuracy:.1f}%)', 
-                 fontsize=16, fontweight='bold', y=0.98)
-    plt.tight_layout()
+    plt.suptitle(f'Random 20 Samples Prediction (Accuracy: {accuracy:.1f}%, {correct_count}/{num_samples})', 
+                 fontsize=14, fontweight='bold', y=0.98)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     
-    # 保存结果（自动处理重名）
+    # 保存结果
     save_dir = './predictions'
     os.makedirs(save_dir, exist_ok=True)
-    save_path = get_unique_filename(save_dir, 'test_set_predictions', '.png')
+    save_path = get_unique_filename(save_dir, 'random_20_predictions', '.png')
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"\n✓ 测试集预测结果已保存至: {save_path}")
+    print(f"\n✓ 随机20张预测结果已保存至: {save_path}")
     
     plt.show()
     plt.close()
     
     return results
+
+
+# ==================== 完整测试集评估 ====================
+def evaluate_full_test_set(model, class_names, device):
+    """在完整测试集上评估模型，输出详细指标"""
+    import torchvision
+    from torch.utils.data import DataLoader
+    from tqdm import tqdm
+    
+    print("\n" + "=" * 70)
+    print("开始完整测试集评估...")
+    print("=" * 70)
+    
+    # 加载测试集
+    test_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+    ])
+    test_dataset = torchvision.datasets.CIFAR10(
+        root='./dataset', train=False, download=False, transform=test_transform
+    )
+    test_loader = DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=0)
+    
+    print(f"测试集大小: {len(test_dataset)} 张图像")
+    
+    # 收集所有预测和真实标签
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    
+    model.eval()
+    with torch.no_grad():
+        for images, labels in tqdm(test_loader, desc='评估中'):
+            images = images.to(device)
+            outputs = model(images)
+            probs = torch.nn.functional.softmax(outputs, dim=1)
+            _, predicted = torch.max(outputs, 1)
+            
+            all_preds.extend(predicted.cpu().numpy())
+            all_labels.extend(labels.numpy())
+            all_probs.extend(probs.cpu().numpy())
+    
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    all_probs = np.array(all_probs)
+    
+    # 计算整体准确率
+    accuracy = (all_preds == all_labels).sum() / len(all_labels) * 100
+    
+    # 计算每个类别的指标
+    print("\n" + "=" * 70)
+    print(f"{'类别':<15} {'精确率':>10} {'召回率':>10} {'F1分数':>10} {'样本数':>10}")
+    print("-" * 70)
+    
+    class_metrics = []
+    for i, class_name in enumerate(class_names):
+        # True Positives, False Positives, False Negatives
+        tp = ((all_preds == i) & (all_labels == i)).sum()
+        fp = ((all_preds == i) & (all_labels != i)).sum()
+        fn = ((all_preds != i) & (all_labels == i)).sum()
+        
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+        support = (all_labels == i).sum()
+        
+        class_metrics.append({
+            'class': class_name,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+            'support': support
+        })
+        
+        print(f"{class_name:<15} {precision*100:>9.2f}% {recall*100:>9.2f}% {f1*100:>9.2f}% {support:>10d}")
+    
+    # 计算宏平均和加权平均
+    macro_precision = np.mean([m['precision'] for m in class_metrics])
+    macro_recall = np.mean([m['recall'] for m in class_metrics])
+    macro_f1 = np.mean([m['f1'] for m in class_metrics])
+    
+    total_samples = sum([m['support'] for m in class_metrics])
+    weighted_precision = sum([m['precision'] * m['support'] for m in class_metrics]) / total_samples
+    weighted_recall = sum([m['recall'] * m['support'] for m in class_metrics]) / total_samples
+    weighted_f1 = sum([m['f1'] * m['support'] for m in class_metrics]) / total_samples
+    
+    print("-" * 70)
+    print(f"{'宏平均':<15} {macro_precision*100:>9.2f}% {macro_recall*100:>9.2f}% {macro_f1*100:>9.2f}%")
+    print(f"{'加权平均':<15} {weighted_precision*100:>9.2f}% {weighted_recall*100:>9.2f}% {weighted_f1*100:>9.2f}%")
+    print("=" * 70)
+    print(f"\n✓ 整体准确率: {accuracy:.2f}%")
+    print(f"✓ 测试样本数: {len(all_labels)}")
+    print("=" * 70)
+    
+    # 绘制混淆矩阵
+    try:
+        from sklearn.metrics import confusion_matrix
+        import seaborn as sns
+        
+        cm = confusion_matrix(all_labels, all_preds)
+        
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=class_names, yticklabels=class_names,
+                    cbar_kws={'label': 'Sample Count'},
+                    annot_kws={'fontsize': 10})
+        plt.xlabel('Predicted Class', fontsize=13, fontweight='bold')
+        plt.ylabel('True Class', fontsize=13, fontweight='bold')
+        plt.title(f'Confusion Matrix (Accuracy: {accuracy:.2f}%)', fontsize=15, fontweight='bold', pad=15)
+        plt.xticks(rotation=45, ha='right')
+        plt.yticks(rotation=0)
+        plt.tight_layout()
+        
+        save_dir = './predictions'
+        os.makedirs(save_dir, exist_ok=True)
+        save_path = get_unique_filename(save_dir, 'test_confusion_matrix', '.png')
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"\n✓ 混淆矩阵已保存至: {save_path}")
+        
+        plt.show()
+        plt.close()
+    except ImportError:
+        print("\n警告: 需要安装 scikit-learn 和 seaborn 才能绘制混淆矩阵")
+    
+    return {
+        'accuracy': accuracy,
+        'class_metrics': class_metrics,
+        'macro_f1': macro_f1,
+        'weighted_f1': weighted_f1
+    }
 
 
 # ==================== 主函数 ====================
@@ -403,6 +516,10 @@ def main():
     print(f"\n使用设备: {device}")
     if device == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}\n")
+    
+    # 显示可用模型
+    print("\n当前可用模型:")
+    list_models()
     
     # 加载模型
     try:
@@ -424,10 +541,11 @@ def main():
     print("选择预测模式:")
     print("1. 单张图像预测")
     print("2. 批量预测（文件夹）")
-    print("3. 测试集随机预测")
+    print("3. 随机20张图片预测（显示在一张图上）")
+    print("4. 完整测试集评估（输出详细指标）")
     print("=" * 70)
     
-    choice = input("\n请输入选项 (1/2/3): ").strip()
+    choice = input("\n请输入选项 (1/2/3/4): ").strip()
     
     if choice == '1':
         # 单张图像预测
@@ -450,11 +568,15 @@ def main():
             print(f"错误: 文件夹不存在 {image_dir}")
     
     elif choice == '3':
-        # 测试集随机预测
-        num_samples = input("请输入预测数量 (默认 10): ").strip()
-        num_samples = int(num_samples) if num_samples.isdigit() else 10
+        # 随机20张预测（固定）
         predict_from_test_set(
-            model, CONFIG['class_names'], device, num_samples
+            model, CONFIG['class_names'], device, num_samples=20
+        )
+    
+    elif choice == '4':
+        # 完整测试集评估
+        evaluate_full_test_set(
+            model, CONFIG['class_names'], device
         )
     
     else:
